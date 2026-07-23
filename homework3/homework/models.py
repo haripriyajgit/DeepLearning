@@ -9,6 +9,7 @@ INPUT_STD = [0.2064, 0.1944, 0.2252]
 
 
 class Classifier(nn.Module):
+    
     def __init__(
         self,
         in_channels: int = 3,
@@ -27,7 +28,21 @@ class Classifier(nn.Module):
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
         # TODO: implement
-        pass
+        self.model = nn.Sequential(          # <-- must be self.model, not just "model ="
+            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(128, num_classes),
+        )
+        
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -41,9 +56,11 @@ class Classifier(nn.Module):
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
         # TODO: replace with actual forward pass
-        logits = torch.randn(x.size(0), 6)
+        #logits = torch.randn(x.size(0), 6)
+        
+        return self.model(z)
 
-        return logits
+        #return logits
 
     def predict(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -79,27 +96,45 @@ class Detector(torch.nn.Module):
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
         # TODO: implement
-        pass
+        #pass
+        def down_block(cin, cout):
+            return nn.Sequential(
+                nn.Conv2d(cin, cout, kernel_size=3, stride=2, padding=1),
+                nn.BatchNorm2d(cout),
+                nn.ReLU(),
+            )
+
+        def up_block(cin, cout):
+            return nn.Sequential(
+                nn.ConvTranspose2d(cin, cout, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(cout),
+                nn.ReLU(),
+            )
+
+        self.down1 = down_block(in_channels, 16)
+        self.down2 = down_block(16, 32)
+        self.down3 = down_block(32, 64)
+
+        self.up1 = up_block(64, 32)
+        self.up2 = up_block(32 + 32, 16)
+        self.up3 = up_block(16 + 16, 16)
+
+        self.seg_head = nn.Conv2d(16, num_classes, kernel_size=1)
+        self.depth_head = nn.Conv2d(16, 1, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Used in training, takes an image and returns raw logits and raw depth.
-        This is what the loss functions use as input.
-
-        Args:
-            x (torch.FloatTensor): image with shape (b, 3, h, w) and vals in [0, 1]
-
-        Returns:
-            tuple of (torch.FloatTensor, torch.FloatTensor):
-                - logits (b, num_classes, h, w)
-                - depth (b, h, w)
-        """
-        # optional: normalizes the input
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
-        # TODO: replace with actual forward pass
-        logits = torch.randn(x.size(0), 3, x.size(2), x.size(3))
-        raw_depth = torch.rand(x.size(0), x.size(2), x.size(3))
+        d1 = self.down1(z)
+        d2 = self.down2(d1)
+        d3 = self.down3(d2)
+
+        u1 = self.up1(d3)
+        u2 = self.up2(torch.cat([u1, d2], dim=1))
+        u3 = self.up3(torch.cat([u2, d1], dim=1))
+
+        logits = self.seg_head(u3)
+        raw_depth = self.depth_head(u3).squeeze(1)
 
         return logits, raw_depth
 
@@ -116,11 +151,15 @@ class Detector(torch.nn.Module):
                 - pred: class labels {0, 1, 2} with shape (b, h, w)
                 - depth: normalized depth [0, 1] with shape (b, h, w)
         """
+       
+    
         logits, raw_depth = self(x)
         pred = logits.argmax(dim=1)
 
         # Optional additional post-processing for depth only if needed
-        depth = raw_depth
+        #depth = raw_depth
+        depth = torch.sigmoid(raw_depth)   # <-- this line must be here
+    
 
         return pred, depth
 

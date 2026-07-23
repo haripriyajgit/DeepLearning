@@ -34,7 +34,15 @@ class SuperTuxDataset(Dataset):
 
         if transform_pipeline == "default":
             xform = transforms.ToTensor()
+        #elif transform_pipeline == "aug":
         elif transform_pipeline == "aug":
+            xform = transforms.Compose(
+        [
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            transforms.ToTensor(),
+        ]
+    )
             # construct your custom augmentation
             xform = transforms.Compose(
                 [
