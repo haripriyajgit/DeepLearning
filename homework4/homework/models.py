@@ -14,15 +14,19 @@ class MLPPlanner(nn.Module):
         n_track: int = 10,
         n_waypoints: int = 3,
     ):
-        """
-        Args:
-            n_track (int): number of points in each side of the track
-            n_waypoints (int): number of waypoints to predict
-        """
         super().__init__()
 
         self.n_track = n_track
         self.n_waypoints = n_waypoints
+
+        input_dim = n_track * 2 * 2
+        self.model = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, n_waypoints * 2),
+        )
 
     def forward(
         self,
@@ -30,20 +34,11 @@ class MLPPlanner(nn.Module):
         track_right: torch.Tensor,
         **kwargs,
     ) -> torch.Tensor:
-        """
-        Predicts waypoints from the left and right boundaries of the track.
-
-        During test time, your model will be called with
-        model(track_left=..., track_right=...), so keep the function signature as is.
-
-        Args:
-            track_left (torch.Tensor): shape (b, n_track, 2)
-            track_right (torch.Tensor): shape (b, n_track, 2)
-
-        Returns:
-            torch.Tensor: future waypoints with shape (b, n_waypoints, 2)
-        """
-        raise NotImplementedError
+        b = track_left.shape[0]
+        x = torch.cat([track_left, track_right], dim=1)
+        x = x.view(b, -1)
+        out = self.model(x)
+        return out.view(b, self.n_waypoints, 2)
 
 
 class TransformerPlanner(nn.Module):
@@ -59,6 +54,14 @@ class TransformerPlanner(nn.Module):
         self.n_waypoints = n_waypoints
 
         self.query_embed = nn.Embedding(n_waypoints, d_model)
+        self.input_proj = nn.Linear(2, d_model)
+
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=d_model, nhead=4, dim_feedforward=128, batch_first=True,
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=2)
+
+        self.output_proj = nn.Linear(d_model, 2)
 
     def forward(
         self,
@@ -66,20 +69,15 @@ class TransformerPlanner(nn.Module):
         track_right: torch.Tensor,
         **kwargs,
     ) -> torch.Tensor:
-        """
-        Predicts waypoints from the left and right boundaries of the track.
+        b = track_left.shape[0]
 
-        During test time, your model will be called with
-        model(track_left=..., track_right=...), so keep the function signature as is.
+        track = torch.cat([track_left, track_right], dim=1)
+        memory = self.input_proj(track)
 
-        Args:
-            track_left (torch.Tensor): shape (b, n_track, 2)
-            track_right (torch.Tensor): shape (b, n_track, 2)
+        queries = self.query_embed.weight[None].expand(b, -1, -1)
 
-        Returns:
-            torch.Tensor: future waypoints with shape (b, n_waypoints, 2)
-        """
-        raise NotImplementedError
+        decoded = self.decoder(tgt=queries, memory=memory)
+        return self.output_proj(decoded)
 
 
 class CNNPlanner(torch.nn.Module):
@@ -94,18 +92,29 @@ class CNNPlanner(torch.nn.Module):
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN), persistent=False)
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD), persistent=False)
 
-    def forward(self, image: torch.Tensor, **kwargs) -> torch.Tensor:
-        """
-        Args:
-            image (torch.FloatTensor): shape (b, 3, h, w) and vals in [0, 1]
+        self.backbone = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+        )
+        self.head = nn.Linear(128, n_waypoints * 2)
 
-        Returns:
-            torch.FloatTensor: future waypoints with shape (b, n, 2)
-        """
+    def forward(self, image: torch.Tensor, **kwargs) -> torch.Tensor:
         x = image
         x = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
-        raise NotImplementedError
+        b = x.shape[0]
+        feat = self.backbone(x)
+        out = self.head(feat)
+        return out.view(b, self.n_waypoints, 2)
 
 
 MODEL_FACTORY = {
